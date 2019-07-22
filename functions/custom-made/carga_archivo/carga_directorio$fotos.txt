@@ -1,0 +1,136 @@
+create or replace function carga_directorio$fotospersona(x$clase_archivo varchar2, x$sime number, x$directorio in out varchar2)
+	return number is
+  v$err                   constant number := -20000; -- an integer in the range -20000..-20999
+  err_msg               	VARCHAR2(2000);
+  v_id_carga_archivo    	number;
+  v_id_linea_archivo    	number;
+  v_cant_errores				  number;
+  archivo             		varchar2(255);
+  contador            		integer :=0;
+  c1 							        sys_refcursor;
+  file_name 					    varchar2(400);
+  v_linea						      varchar2(400);
+  v_cedula						    varchar2(10);
+  v_persona					      number;
+  v_id_archivo_adjunto		number;
+  v_id_documento				  number;
+  x$directoriodestino		  varchar2(400);
+  x$directorioorigen		  varchar2(400);
+  v1                      number;
+  x$reg                   number;
+	Begin
+    begin
+      Select directory_path into x$directorioorigen 
+      From all_directories where directory_name='DIR_IMPORTAR';
+    EXCEPTION
+    WHEN NO_DATA_FOUND THEN
+      raise_application_error(v$err,'Error: no se consigue un directorio válido identificado como: (DIR_IMPORTAR).', true);
+    when others then
+      raise_application_error(v$err,'Error al intertar obtener el directorio dónde se van a buscar las fotos, mensaje: '|| sqlerrm, true);
+    End;
+	   --CopyLeft http://www.forosdelweb.com/f100/listar-directorio-543704/
+    x$directoriodestino:= x$directorioorigen || x$directorio;
+		get_directory_files(x$directoriodestino, c1);
+		Fetch c1 into file_name;
+      Begin
+        v_id_carga_archivo:=busca_clave_id;
+        INSERT INTO CARGA_ARCHIVO (ID, VERSION, CODIGO, CLASE, ARCHIVO, ADJUNTO,
+                                  NUMERO_SIME, FECHA_HORA, ARCHIVO_SIN_ERRORES, PROCESO_SIN_ERRORES, OBSERVACIONES)
+        VALUES (v_id_carga_archivo, 0, v_id_carga_archivo, x$clase_archivo, archivo, null,
+                x$sime, sysdate, null, null, 'Carga de Documentos, directorio trabajado:' || x$directoriodestino);
+      exception
+      when others then
+        raise_application_error(-20001,'Error al intentar insertar la carga del archivo, mensaje:'|| sqlerrm, true);
+      End;
+      while c1%found loop
+	      v_cant_errores:=0;
+      	Begin
+          v_id_linea_archivo:=busca_clave_id;
+          INSERT INTO LINEA_ARCHIVO (ID, VERSION, CODIGO, CARGA, NUMERO, TEXTO, ERRORES)
+          VALUES (v_id_linea_archivo, 0, v_id_linea_archivo, v_id_carga_archivo, contador, '', '');
+        exception
+        when others then
+          raise_application_error(-20001,'Error al intentar insertar la linea (' || contador || ') del archivo, mensaje:'|| sqlerrm, true);
+        End;
+        v_linea:=substr(file_name,instr(file_name,'\',-1)+1);
+        v1:=length(x$directorioorigen);
+        file_name:=substr(replace(file_name,'\','/'), v1);
+        if instr(v_linea,' ')>0 Then
+         	v_linea:=substr(v_linea,1,instr(v_linea,' '));
+        elsif instr(v_linea,'_')>0 Then
+          v_linea:=substr(v_linea,1,instr(v_linea,'_'));
+        elsif instr(v_linea,'(')>0 Then
+         	v_linea:=substr(v_linea,1,instr(v_linea,'('));
+        else
+          v_linea:=substr(v_linea,1,10);
+        end if;
+        v_cedula:=trim(substr(v_linea,1,10));
+        Begin
+          Select id into v_persona From persona Where cedula=v_cedula;
+        EXCEPTION
+        WHEN NO_DATA_FOUND THEN
+          v_persona:=null;
+          v_cant_errores:=v_cant_errores+1;
+          err_msg := SUBSTR(SQLERRM, 1, 200);
+          x$reg:=carga_archivo$pistaerror(v_id_linea_archivo, 'Persona no encontrada, nombre archivo:' || file_name || ', número item:' || contador || ', mensaje:' || err_msg);
+        when others then
+         	Begin
+            v_persona:=null;            
+            v_cant_errores:=v_cant_errores+1;
+            err_msg := SUBSTR(SQLERRM, 1, 200);
+            x$reg:=carga_archivo$pistaerror(v_id_linea_archivo,'Error al intentar buscar la persona, nombre archivo:' || file_name || ', número item:' || contador || ', mensaje:' || err_msg);
+          exception
+          when others then
+            raise_application_error(-20002,'Error al insertar un registro de error en carga de archivo, mensaje '|| sqlerrm, true);
+          End;         
+        end;
+        if v_persona is not null then
+          --UTL_FILE.FCOPY (x$directorio, file_name, x$directoriodestino, file_name);
+          v_id_archivo_adjunto:=busca_clave_id;
+          Begin
+            insert into archivo_adjunto (id, archivo_servidor, archivo_cliente, propietario, codigo_usuario_propietario, 
+                                        nombre_usuario_propietario, fecha_hora_carga, tipo_contenido, longitud,
+                                        octetos, restaurable)
+                                values (v_id_archivo_adjunto, file_name, file_name, 101, 'admin',
+                                        'Administrador', sysdate, 'image/jpeg', NULL, 
+                                        NULL, 'true');
+          exception
+	        when others then
+						v_cant_errores:=v_cant_errores+1;
+						err_msg := SUBSTR(SQLERRM, 1, 200);
+						x$reg:=carga_archivo$pistaerror(v_id_linea_archivo, 'Error al intentar insertar el registro del archivo, nombre archivo:' || file_name || ', número item:' || contador || ', mensaje:' || err_msg);
+          End;
+	        v_id_documento:=busca_clave_id;
+          Begin
+	        	Insert Into documento (id, version, tipo, codigo, descripcion, archivo, adjunto, numero_sime, 
+   	         											estado, persona_x1, ultima_carga, usuario_transicion)
+                          values (v_id_documento,0, 1, v_id_documento, 'Foto Persona', '/spnc2ap112/attachments/fotos' || file_name, v_id_archivo_adjunto, x$sime, 
+                                  3, v_persona, sysdate, '101');
+          exception
+	        when others then
+						v_cant_errores:=v_cant_errores+1;
+						err_msg := SUBSTR(SQLERRM, 1, 200);
+						x$reg:=carga_archivo$pistaerror(v_id_linea_archivo, 'Error al intentar insertar el registro del documento, cédula:' || v_cedula || ', número item:' || contador || ', mensaje:' || err_msg);
+          End;                                                
+        end if;
+        Fetch c1 into file_name;
+        if (v_cant_errores>0) Then
+          Update LINEA_ARCHIVO set TEXTO='Item generada con errores(' || v_cant_errores || ')', ERRORES=v_cant_errores Where id=v_id_linea_archivo;
+        Else
+          Update LINEA_ARCHIVO set TEXTO='Item generada sin errores' Where id=v_id_linea_archivo;
+        End If;
+        contador:=contador+1;
+		end loop;
+		Select Count(a.id) into v_cant_errores
+		From LINEA_ARCHIVO a inner join ERROR_ARCHIVO b on a.id = b.linea
+		Where a.CARGA=v_id_carga_archivo;
+    if v_cant_errores>0 then
+      Update CARGA_ARCHIVO set ARCHIVO_SIN_ERRORES='false' Where id=v_id_carga_archivo;
+		end if;
+    return 0;
+exception
+  when others then
+    err_msg := SQLERRM;
+    raise_application_error(-20000, err_msg, true);
+end;
+/
